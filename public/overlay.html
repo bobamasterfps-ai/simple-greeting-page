@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamSpike Overlay</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            color: white;
+            overflow: hidden;
+            background: transparent;
+        }
+        body.solid { background: #0f111a; }
+        .overlay { display: none; }
+        .overlay.active { display: block; }
+
+        /* Animations */
+        @keyframes float-particle {
+            0% { transform: translateY(0) translateX(0) rotate(0deg); opacity: 0; }
+            20% { opacity: 0.6; }
+            80% { opacity: 0.6; }
+            100% { transform: translateY(-100px) translateX(50px) rotate(180deg); opacity: 0; }
+        }
+        @keyframes sweep {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        @keyframes glow-pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 0.8; }
+        }
+        @keyframes spin-slow {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        @keyframes pulse-ring {
+            0% { transform: scale(1); opacity: 0.6; }
+            50% { transform: scale(1.05); opacity: 0.8; }
+            100% { transform: scale(1); opacity: 0.6; }
+        }
+        @keyframes flash-green {
+            0%, 100% { box-shadow: 0 0 0 rgba(0,255,136,0); }
+            50% { box-shadow: 0 0 30px rgba(0,255,136,0.6); }
+        }
+        @keyframes flash-red {
+            0%, 100% { box-shadow: 0 0 0 rgba(255,68,68,0); }
+            50% { box-shadow: 0 0 30px rgba(255,68,68,0.6); }
+        }
+        .animate-float-particle { animation: float-particle 8s ease-in-out infinite; }
+        .animate-sweep { animation: sweep 10s linear infinite; }
+        .animate-glow-pulse { animation: glow-pulse 2s ease-in-out infinite; }
+        .animate-spin-slow { animation: spin-slow 20s linear infinite; }
+        .animate-pulse-ring { animation: pulse-ring 2s ease-in-out infinite; }
+        .win-text { color: #00ff88; }
+        .loss-text { color: #ff4444; }
+
+        /* ==================== ARC OVERLAY ==================== */
+        .arc-overlay {
+            width: 800px;
+            height: 160px;
+            position: relative;
+        }
+        .arc-bg {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, rgba(15,17,26,0.95), rgba(25,28,40,0.9));
+            border-radius: 80px;
+            border: 1px solid rgba(96,165,255,0.2);
+            overflow: hidden;
+        }
+        .arc-particles {
+            position: absolute;
+            inset: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        .arc-particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: rgba(96,165,255,0.6);
+            border-radius: 50%;
+        }
+        .arc-sweep {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(96,165,255,0.1), transparent);
+        }
+        .arc-glow {
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 400px;
+            height: 40px;
+            background: radial-gradient(ellipse, rgba(96,165,255,0.3), transparent 70%);
+            filter: blur(10px);
+        }
+        .arc-content {
+            position: relative;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            height: 100%;
+            padding: 0 30px;
+            gap: 24px;
+        }
+        .arc-rank-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+        .arc-rank-icon-wrap {
+            position: relative;
+            width: 80px;
+            height: 80px;
+        }
+        .arc-rank-ring {
+            position: absolute;
+            inset: -4px;
+            border: 2px solid rgba(96,165,255,0.4);
+            border-radius: 50%;
+        }
+        .arc-rank-ring-inner {
+            position: absolute;
+            inset: 0;
+            border: 2px solid rgba(180,139,199,0.6);
+            border-radius: 50%;
+        }
+        .arc-rank-icon {
+            width: 80px;
+            height: 80px;
+            object-fit: contain;
+            position: relative;
+            z-index: 2;
+        }
+        .arc-rank-glow {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle, rgba(180,139,199,0.3), transparent 60%);
+            filter: blur(8px);
+        }
+        .arc-info {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .arc-rank-name {
+            font-size: 28px;
+            font-weight: 900;
+            background: linear-gradient(135deg, #b48bc7, #60a5ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .arc-rr {
+            font-size: 24px;
+            font-weight: 700;
+            color: #60a5ff;
+        }
+        .arc-subtitle {
+            font-size: 12px;
+            color: rgba(255,255,255,0.5);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .arc-stats {
+            display: flex;
+            gap: 16px;
+            margin-top: 4px;
+        }
+        .arc-stat {
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .arc-stat-win { background: rgba(0,255,136,0.2); color: #00ff88; }
+        .arc-stat-loss { background: rgba(255,68,68,0.2); color: #ff4444; }
+        .arc-stat-last { color: #00ff88; }
+        .arc-stat-net { color: rgba(255,255,255,0.7); }
+        .arc-player {
+            text-align: right;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .arc-player-name {
+            font-size: 16px;
+            font-weight: 700;
+            color: white;
+        }
+        .arc-player-tag { color: #60a5ff; }
+        .arc-player-region {
+            font-size: 12px;
+            color: rgba(255,255,255,0.5);
+            text-transform: uppercase;
+        }
+
+        /* ==================== CIRCLE OVERLAY ==================== */
+        .circle-overlay {
+            width: 200px;
+            height: 240px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+        .circle-main {
+            position: relative;
+            width: 160px;
+            height: 160px;
+        }
+        .circle-ring-outer {
+            position: absolute;
+            inset: 0;
+            border: 3px solid rgba(96,165,255,0.3);
+            border-radius: 50%;
+        }
+        .circle-ring-inner {
+            position: absolute;
+            inset: 8px;
+            border: 2px solid rgba(96,165,255,0.5);
+            border-radius: 50%;
+        }
+        .circle-progress-svg {
+            position: absolute;
+            inset: 0;
+            width: 160px;
+            height: 160px;
+            transform: rotate(-90deg);
+        }
+        .circle-progress-bg {
+            fill: none;
+            stroke: rgba(96,165,255,0.2);
+            stroke-width: 6;
+        }
+        .circle-progress-bar {
+            fill: none;
+            stroke: url(#circleGradient);
+            stroke-width: 6;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 0.5s ease;
+        }
+        .circle-center {
+            position: absolute;
+            inset: 20px;
+            background: linear-gradient(135deg, rgba(15,17,26,0.98), rgba(25,28,40,0.95));
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+        }
+        .circle-rank-icon {
+            width: 40px;
+            height: 40px;
+            object-fit: contain;
+        }
+        .circle-rr {
+            font-size: 32px;
+            font-weight: 900;
+            color: white;
+        }
+        .circle-rr-label {
+            font-size: 12px;
+            color: rgba(255,255,255,0.5);
+            text-transform: uppercase;
+        }
+        .circle-stats {
+            display: flex;
+            gap: 12px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .circle-last {
+            font-size: 16px;
+            font-weight: 700;
+        }
+        .circle-player {
+            font-size: 12px;
+            color: rgba(255,255,255,0.6);
+            text-align: center;
+        }
+
+        /* ==================== BAR OVERLAY ==================== */
+        .bar-overlay {
+            width: 500px;
+            height: 70px;
+            position: relative;
+        }
+        .bar-bg {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, rgba(15,17,26,0.95), rgba(25,28,40,0.9));
+            border-radius: 12px;
+            border: 1px solid rgba(96,165,255,0.15);
+            overflow: hidden;
+        }
+        .bar-progress-track {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: rgba(96,165,255,0.2);
+        }
+        .bar-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #60a5ff, #b48bc7);
+            border-radius: 0 2px 2px 0;
+            transition: width 0.5s ease;
+        }
+        .bar-content {
+            position: relative;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            height: 100%;
+            padding: 0 16px;
+            gap: 12px;
+        }
+        .bar-rank-icon {
+            width: 44px;
+            height: 44px;
+            object-fit: contain;
+        }
+        .bar-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .bar-rank-row {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+        }
+        .bar-rank-name {
+            font-size: 16px;
+            font-weight: 700;
+            color: white;
+        }
+        .bar-rr {
+            font-size: 20px;
+            font-weight: 900;
+            color: #60a5ff;
+        }
+        .bar-subtitle {
+            font-size: 10px;
+            color: rgba(255,255,255,0.4);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .bar-live { color: #00ff88; font-weight: 600; }
+        .bar-stats {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+        }
+        .bar-stat {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .bar-stat-win { background: rgba(0,255,136,0.15); color: #00ff88; }
+        .bar-stat-loss { background: rgba(255,68,68,0.15); color: #ff4444; }
+        .bar-stat-info {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2px 8px;
+        }
+        .bar-stat-value { font-weight: 700; font-size: 12px; }
+        .bar-stat-label { font-size: 8px; color: rgba(255,255,255,0.4); text-transform: uppercase; }
+        .bar-player {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            font-size: 13px;
+        }
+        .bar-player-name { color: white; font-weight: 600; }
+        .bar-player-tag { color: #60a5ff; }
+
+        /* ==================== GLASS OVERLAY ==================== */
+        .glass-overlay {
+            width: 280px;
+            height: 160px;
+            position: relative;
+        }
+        .glass-bg {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, rgba(30,35,50,0.85), rgba(20,24,36,0.9));
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 16px;
+            border: 1px solid rgba(96,165,255,0.2);
+            overflow: hidden;
+        }
+        .glass-glow {
+            position: absolute;
+            top: -30px;
+            right: -30px;
+            width: 100px;
+            height: 100px;
+            background: radial-gradient(circle, rgba(96,165,255,0.3), transparent 60%);
+            filter: blur(20px);
+        }
+        .glass-content {
+            position: relative;
+            z-index: 10;
+            padding: 16px;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        .glass-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .glass-rank-icon {
+            width: 44px;
+            height: 44px;
+            object-fit: contain;
+        }
+        .glass-player-info { flex: 1; }
+        .glass-player-name {
+            font-size: 14px;
+            font-weight: 700;
+            color: white;
+        }
+        .glass-player-tag { color: #60a5ff; }
+        .glass-player-region {
+            font-size: 10px;
+            color: rgba(255,255,255,0.5);
+            text-transform: uppercase;
+        }
+        .glass-main {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .glass-rank-name {
+            font-size: 18px;
+            font-weight: 700;
+            color: #b48bc7;
+        }
+        .glass-rr {
+            font-size: 28px;
+            font-weight: 900;
+            color: white;
+        }
+        .glass-rr-label {
+            font-size: 14px;
+            color: rgba(255,255,255,0.5);
+        }
+        .glass-stats {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: auto;
+        }
+        .glass-stat-group { display: flex; gap: 8px; }
+        .glass-last { font-weight: 700; font-size: 16px; }
+        .glass-net { color: rgba(255,255,255,0.6); font-size: 12px; }
+
+        /* ==================== HYPE OVERLAY ==================== */
+        .hype-overlay {
+            width: 420px;
+            height: 180px;
+            position: relative;
+        }
+        .hype-bg {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, rgba(15,17,30,0.95), rgba(30,25,50,0.9));
+            border-radius: 20px;
+            border: 2px solid rgba(96,165,255,0.3);
+            overflow: hidden;
+        }
+        .hype-particles {
+            position: absolute;
+            inset: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        .hype-particle {
+            position: absolute;
+            border-radius: 50%;
+        }
+        .hype-glow-left {
+            position: absolute;
+            left: -50px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 150px;
+            height: 150px;
+            background: radial-gradient(circle, rgba(180,139,199,0.4), transparent 60%);
+            filter: blur(30px);
+        }
+        .hype-glow-right {
+            position: absolute;
+            right: -30px;
+            bottom: -30px;
+            width: 120px;
+            height: 120px;
+            background: radial-gradient(circle, rgba(96,165,255,0.3), transparent 60%);
+            filter: blur(25px);
+        }
+        .hype-content {
+            position: relative;
+            z-index: 10;
+            display: flex;
+            height: 100%;
+            padding: 20px;
+            gap: 20px;
+        }
+        .hype-rank-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .hype-rank-icon {
+            width: 72px;
+            height: 72px;
+            object-fit: contain;
+            filter: drop-shadow(0 0 20px rgba(180,139,199,0.5));
+        }
+        .hype-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 4px;
+        }
+        .hype-rank-name {
+            font-size: 24px;
+            font-weight: 900;
+            background: linear-gradient(135deg, #b48bc7, #60a5ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .hype-rr-row {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+        }
+        .hype-rr {
+            font-size: 42px;
+            font-weight: 900;
+            color: white;
+        }
+        .hype-rr-label {
+            font-size: 18px;
+            color: rgba(255,255,255,0.5);
+            font-weight: 700;
+        }
+        .hype-subtitle {
+            font-size: 11px;
+            color: rgba(255,255,255,0.4);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .hype-right {
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+        .hype-stats {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
+        }
+        .hype-stat-row { display: flex; gap: 8px; }
+        .hype-stat {
+            padding: 4px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 700;
+        }
+        .hype-stat-win { background: rgba(0,255,136,0.2); color: #00ff88; }
+        .hype-stat-loss { background: rgba(255,68,68,0.2); color: #ff4444; }
+        .hype-last { font-weight: 700; font-size: 16px; }
+        .hype-net { color: rgba(255,255,255,0.6); font-size: 12px; }
+        .hype-player {
+            font-size: 13px;
+            color: rgba(255,255,255,0.8);
+        }
+        .hype-player-tag { color: #60a5ff; }
+    </style>
+</head>
+<body>
+    <!-- SVG Defs for Circle Progress -->
+    <svg width="0" height="0" style="position:absolute;">
+        <defs>
+            <linearGradient id="circleGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#60a5ff"/>
+                <stop offset="100%" stop-color="#b48bc7"/>
+            </linearGradient>
+        </defs>
+    </svg>
+
+    <!-- ARC OVERLAY -->
+    <div id="arc-overlay" class="overlay arc-overlay">
+        <div class="arc-bg">
+            <div class="arc-particles">
+                <div class="arc-particle animate-float-particle" style="left: 10%; bottom: 20%; animation-delay: 0s;"></div>
+                <div class="arc-particle animate-float-particle" style="left: 30%; bottom: 10%; animation-delay: 2s;"></div>
+                <div class="arc-particle animate-float-particle" style="left: 50%; bottom: 15%; animation-delay: 4s;"></div>
+                <div class="arc-particle animate-float-particle" style="left: 70%; bottom: 20%; animation-delay: 1s;"></div>
+                <div class="arc-particle animate-float-particle" style="left: 90%; bottom: 10%; animation-delay: 3s;"></div>
+            </div>
+            <div class="arc-sweep animate-sweep"></div>
+            <div class="arc-glow animate-glow-pulse"></div>
+        </div>
+        <div class="arc-content">
+            <div class="arc-rank-section">
+                <div class="arc-rank-icon-wrap">
+                    <div class="arc-rank-ring animate-spin-slow"></div>
+                    <div class="arc-rank-ring-inner animate-pulse-ring"></div>
+                    <div class="arc-rank-glow animate-glow-pulse"></div>
+                    <img id="arc-rank-img" class="arc-rank-icon" src="" alt="Rank">
+                </div>
+            </div>
+            <div class="arc-info">
+                <div class="arc-rank-name" id="arc-rank-name">Diamond 3</div>
+                <div class="arc-rr"><span id="arc-rr">85</span> RR</div>
+                <div class="arc-subtitle">Competitive • Live Stats</div>
+                <div class="arc-stats">
+                    <span class="arc-stat arc-stat-win" id="arc-wins">0W</span>
+                    <span class="arc-stat arc-stat-loss" id="arc-losses">0L</span>
+                    <span class="arc-stat-last">Last: <span id="arc-last">+0</span></span>
+                    <span class="arc-stat-net">Net: <span id="arc-net">0</span></span>
+                </div>
+            </div>
+            <div class="arc-player">
+                <div class="arc-player-name"><span id="arc-name">Player</span><span class="arc-player-tag" id="arc-tag">#TAG</span></div>
+                <div class="arc-player-region" id="arc-region">AP</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CIRCLE OVERLAY -->
+    <div id="circle-overlay" class="overlay circle-overlay">
+        <div class="circle-main">
+            <div class="circle-ring-outer animate-spin-slow"></div>
+            <div class="circle-ring-inner animate-pulse-ring"></div>
+            <svg class="circle-progress-svg" viewBox="0 0 160 160">
+                <circle class="circle-progress-bg" cx="80" cy="80" r="74"/>
+                <circle class="circle-progress-bar" id="circle-progress" cx="80" cy="80" r="74" 
+                    stroke-dasharray="465" stroke-dashoffset="465"/>
+            </svg>
+            <div class="circle-center">
+                <img id="circle-rank-img" class="circle-rank-icon" src="" alt="Rank">
+                <div class="circle-rr" id="circle-rr">85</div>
+                <div class="circle-rr-label">RR</div>
+            </div>
+        </div>
+        <div class="circle-stats">
+            <span class="win-text" id="circle-wins">0W</span>
+            <span class="loss-text" id="circle-losses">0L</span>
+        </div>
+        <div class="circle-last" id="circle-last">+0</div>
+        <div class="circle-player"><span id="circle-name">Player</span></div>
+    </div>
+
+    <!-- BAR OVERLAY -->
+    <div id="bar-overlay" class="overlay bar-overlay">
+        <div class="bar-bg">
+            <div class="bar-progress-track">
+                <div class="bar-progress-fill" id="bar-progress" style="width: 85%;"></div>
+            </div>
+        </div>
+        <div class="bar-content">
+            <img id="bar-rank-img" class="bar-rank-icon" src="" alt="Rank">
+            <div class="bar-info">
+                <div class="bar-rank-row">
+                    <span class="bar-rank-name" id="bar-rank-name">Diamond 3</span>
+                    <span class="bar-rr"><span id="bar-rr">85</span> RR</span>
+                </div>
+                <div class="bar-subtitle">Competitive • <span class="bar-live">Live</span></div>
+            </div>
+            <div class="bar-stats">
+                <span class="bar-stat bar-stat-win" id="bar-wins">0W</span>
+                <span class="bar-stat bar-stat-loss" id="bar-losses">0L</span>
+                <div class="bar-stat-info">
+                    <span class="bar-stat-value win-text" id="bar-last">+0</span>
+                    <span class="bar-stat-label">LAST</span>
+                </div>
+                <div class="bar-stat-info">
+                    <span class="bar-stat-value" id="bar-net">0</span>
+                    <span class="bar-stat-label">NET</span>
+                </div>
+            </div>
+            <div class="bar-player">
+                <span class="bar-player-name" id="bar-name">Player</span>
+                <span class="bar-player-tag" id="bar-tag">#TAG</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- GLASS OVERLAY -->
+    <div id="glass-overlay" class="overlay glass-overlay">
+        <div class="glass-bg">
+            <div class="glass-glow animate-glow-pulse"></div>
+        </div>
+        <div class="glass-content">
+            <div class="glass-header">
+                <img id="glass-rank-img" class="glass-rank-icon" src="" alt="Rank">
+                <div class="glass-player-info">
+                    <div class="glass-player-name"><span id="glass-name">Player</span><span class="glass-player-tag" id="glass-tag">#TAG</span> • <span id="glass-region">AP</span></div>
+                </div>
+            </div>
+            <div class="glass-main">
+                <span class="glass-rank-name" id="glass-rank-name">Diamond 3</span>
+            </div>
+            <div style="display: flex; align-items: baseline; gap: 4px;">
+                <span class="glass-rr" id="glass-rr">85</span>
+                <span class="glass-rr-label">RR</span>
+            </div>
+            <div class="glass-stats">
+                <div class="glass-stat-group">
+                    <span class="win-text" id="glass-wins">0W</span>
+                    <span class="loss-text" id="glass-losses">0L</span>
+                </div>
+                <span class="glass-last" id="glass-last">+0</span>
+                <span class="glass-net">Net: <span id="glass-net">0</span></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- HYPE OVERLAY -->
+    <div id="hype-overlay" class="overlay hype-overlay">
+        <div class="hype-bg">
+            <div class="hype-particles">
+                <div class="hype-particle animate-float-particle" style="width: 6px; height: 6px; background: rgba(180,139,199,0.6); left: 15%; bottom: 20%; animation-delay: 0s;"></div>
+                <div class="hype-particle animate-float-particle" style="width: 4px; height: 4px; background: rgba(96,165,255,0.6); left: 35%; bottom: 30%; animation-delay: 1.5s;"></div>
+                <div class="hype-particle animate-float-particle" style="width: 5px; height: 5px; background: rgba(180,139,199,0.5); left: 55%; bottom: 15%; animation-delay: 3s;"></div>
+                <div class="hype-particle animate-float-particle" style="width: 3px; height: 3px; background: rgba(96,165,255,0.7); left: 75%; bottom: 25%; animation-delay: 2s;"></div>
+                <div class="hype-particle animate-float-particle" style="width: 4px; height: 4px; background: rgba(180,139,199,0.6); left: 85%; bottom: 10%; animation-delay: 4s;"></div>
+                <div class="hype-particle animate-float-particle" style="width: 5px; height: 5px; background: rgba(96,165,255,0.5); left: 25%; bottom: 35%; animation-delay: 2.5s;"></div>
+                <div class="hype-particle animate-float-particle" style="width: 3px; height: 3px; background: rgba(180,139,199,0.7); left: 65%; bottom: 20%; animation-delay: 1s;"></div>
+                <div class="hype-particle animate-float-particle" style="width: 4px; height: 4px; background: rgba(96,165,255,0.6); left: 45%; bottom: 40%; animation-delay: 3.5s;"></div>
+            </div>
+            <div class="hype-glow-left animate-glow-pulse"></div>
+            <div class="hype-glow-right animate-glow-pulse" style="animation-delay: 1s;"></div>
+        </div>
+        <div class="hype-content">
+            <div class="hype-rank-section">
+                <img id="hype-rank-img" class="hype-rank-icon" src="" alt="Rank">
+            </div>
+            <div class="hype-main">
+                <div class="hype-rank-name" id="hype-rank-name">Diamond 3</div>
+                <div class="hype-rr-row">
+                    <span class="hype-rr" id="hype-rr">85</span>
+                    <span class="hype-rr-label">RR</span>
+                </div>
+                <div class="hype-subtitle">Competitive • Live Stats</div>
+            </div>
+            <div class="hype-right">
+                <div class="hype-stats">
+                    <div class="hype-stat-row">
+                        <span class="hype-stat hype-stat-win" id="hype-wins">0W</span>
+                        <span class="hype-stat hype-stat-loss" id="hype-losses">0L</span>
+                    </div>
+                    <span class="hype-last" id="hype-last">+0</span>
+                    <span class="hype-net">NET <span id="hype-net">0</span></span>
+                </div>
+                <div class="hype-player"><span id="hype-name">Player</span><span class="hype-player-tag" id="hype-tag">#TAG</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const theme = params.get('theme') || 'arc';
+        const name = params.get('name') || 'Player';
+        const tag = params.get('tag') || 'TAG';
+        const region = (params.get('region') || 'ap').toUpperCase();
+        const transparent = params.get('transparent') !== 'false';
+
+        // Set background
+        if (!transparent) document.body.classList.add('solid');
+
+        // Activate correct overlay
+        const overlayEl = document.getElementById(theme + '-overlay');
+        if (overlayEl) overlayEl.classList.add('active');
+
+        // Rank icon URL helper
+        function getRankIcon(tierId) {
+            return 'https://media.valorant-api.com/competitivetiers/03621f52-342b-cf4e-4f86-9350a49c6d04/' + tierId + '/smallicon.png';
+        }
+
+        // Rank name helper
+        const rankNames = {
+            0: 'Unranked', 3: 'Iron 1', 4: 'Iron 2', 5: 'Iron 3',
+            6: 'Bronze 1', 7: 'Bronze 2', 8: 'Bronze 3',
+            9: 'Silver 1', 10: 'Silver 2', 11: 'Silver 3',
+            12: 'Gold 1', 13: 'Gold 2', 14: 'Gold 3',
+            15: 'Platinum 1', 16: 'Platinum 2', 17: 'Platinum 3',
+            18: 'Diamond 1', 19: 'Diamond 2', 20: 'Diamond 3',
+            21: 'Ascendant 1', 22: 'Ascendant 2', 23: 'Ascendant 3',
+            24: 'Immortal 1', 25: 'Immortal 2', 26: 'Immortal 3',
+            27: 'Radiant'
+        };
+
+        function getRankName(tierId) {
+            return rankNames[tierId] || 'Unranked';
+        }
+
+        function formatDelta(val) {
+            const num = parseInt(val) || 0;
+            return num >= 0 ? '+' + num : String(num);
+        }
+
+        function updateOverlay(data) {
+            const rr = data.rr || 0;
+            const tierId = data.tier || 0;
+            const wins = data.wins || 0;
+            const losses = data.losses || 0;
+            const lastDelta = data.last_change || 0;
+            const netDelta = data.net_change || 0;
+            const rankIcon = getRankIcon(tierId);
+            const rankName = getRankName(tierId);
+
+            // Arc
+            document.getElementById('arc-rank-img').src = rankIcon;
+            document.getElementById('arc-rank-name').textContent = rankName;
+            document.getElementById('arc-rr').textContent = rr;
+            document.getElementById('arc-wins').textContent = wins + 'W';
+            document.getElementById('arc-losses').textContent = losses + 'L';
+            document.getElementById('arc-last').textContent = formatDelta(lastDelta);
+            document.getElementById('arc-net').textContent = formatDelta(netDelta);
+            document.getElementById('arc-name').textContent = name;
+            document.getElementById('arc-tag').textContent = '#' + tag;
+            document.getElementById('arc-region').textContent = region;
+
+            // Circle
+            document.getElementById('circle-rank-img').src = rankIcon;
+            document.getElementById('circle-rr').textContent = rr;
+            document.getElementById('circle-wins').textContent = wins + 'W';
+            document.getElementById('circle-losses').textContent = losses + 'L';
+            const lastEl = document.getElementById('circle-last');
+            lastEl.textContent = formatDelta(lastDelta);
+            lastEl.className = 'circle-last ' + (lastDelta >= 0 ? 'win-text' : 'loss-text');
+            document.getElementById('circle-name').textContent = name;
+            // Update circle progress (stroke-dashoffset: 465 = 0%, 0 = 100%)
+            const circumference = 2 * Math.PI * 74; // ~465
+            const offset = circumference - (rr / 100) * circumference;
+            document.getElementById('circle-progress').style.strokeDashoffset = offset;
+
+            // Bar
+            document.getElementById('bar-rank-img').src = rankIcon;
+            document.getElementById('bar-rank-name').textContent = rankName;
+            document.getElementById('bar-rr').textContent = rr;
+            document.getElementById('bar-wins').textContent = wins + 'W';
+            document.getElementById('bar-losses').textContent = losses + 'L';
+            const barLastEl = document.getElementById('bar-last');
+            barLastEl.textContent = formatDelta(lastDelta);
+            barLastEl.className = 'bar-stat-value ' + (lastDelta >= 0 ? 'win-text' : 'loss-text');
+            const barNetEl = document.getElementById('bar-net');
+            barNetEl.textContent = formatDelta(netDelta);
+            barNetEl.className = 'bar-stat-value ' + (netDelta >= 0 ? 'win-text' : 'loss-text');
+            document.getElementById('bar-name').textContent = name;
+            document.getElementById('bar-tag').textContent = '#' + tag;
+            document.getElementById('bar-progress').style.width = rr + '%';
+
+            // Glass
+            document.getElementById('glass-rank-img').src = rankIcon;
+            document.getElementById('glass-rank-name').textContent = rankName;
+            document.getElementById('glass-rr').textContent = rr;
+            document.getElementById('glass-wins').textContent = wins + 'W';
+            document.getElementById('glass-losses').textContent = losses + 'L';
+            const glassLastEl = document.getElementById('glass-last');
+            glassLastEl.textContent = formatDelta(lastDelta);
+            glassLastEl.className = 'glass-last ' + (lastDelta >= 0 ? 'win-text' : 'loss-text');
+            document.getElementById('glass-net').textContent = formatDelta(netDelta);
+            document.getElementById('glass-name').textContent = name;
+            document.getElementById('glass-tag').textContent = '#' + tag;
+            document.getElementById('glass-region').textContent = region;
+
+            // Hype
+            document.getElementById('hype-rank-img').src = rankIcon;
+            document.getElementById('hype-rank-name').textContent = rankName;
+            document.getElementById('hype-rr').textContent = rr;
+            document.getElementById('hype-wins').textContent = wins + 'W';
+            document.getElementById('hype-losses').textContent = losses + 'L';
+            const hypeLastEl = document.getElementById('hype-last');
+            hypeLastEl.textContent = formatDelta(lastDelta);
+            hypeLastEl.className = 'hype-last ' + (lastDelta >= 0 ? 'win-text' : 'loss-text');
+            document.getElementById('hype-net').textContent = formatDelta(netDelta);
+            document.getElementById('hype-name').textContent = name;
+            document.getElementById('hype-tag').textContent = '#' + tag;
+        }
+
+        async function fetchData() {
+            try {
+                const apiUrl = 'https://cgluwgkqwbxdnavtxmwr.supabase.co/functions/v1/overlay-data';
+                const res = await fetch(apiUrl + '?name=' + encodeURIComponent(name) + '&tag=' + encodeURIComponent(tag) + '&region=' + encodeURIComponent(region.toLowerCase()));
+                if (!res.ok) throw new Error('API error');
+                const data = await res.json();
+                updateOverlay(data);
+            } catch (e) {
+                console.error('Overlay fetch error:', e);
+                // Show demo data on error
+                updateOverlay({
+                    rr: 11,
+                    tier: 20,
+                    wins: 0,
+                    losses: 0,
+                    last_change: 19,
+                    net_change: -432
+                });
+            }
+        }
+
+        // Initial fetch
+        fetchData();
+
+        // Refresh every 30 seconds
+        setInterval(fetchData, 30000);
+    </script>
+</body>
+</html>
