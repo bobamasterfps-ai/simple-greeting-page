@@ -6,7 +6,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { toast } from 'sonner';
 
-type TeamRole = 'owner' | 'admin' | 'coach' | 'player' | 'viewer';
+export type TeamRole = 'owner' | 'admin' | 'coach' | 'player' | 'viewer';
 
 export interface Team {
   id: string;
@@ -22,7 +22,7 @@ export interface TeamMember {
   id: string;
   user_id: string;
   team_id: string;
-  role: TeamRole;
+  role: string; // Database returns string, cast as needed
   joined_at: string;
   display_name?: string;
   avatar_url?: string;
@@ -32,7 +32,7 @@ export interface TeamInvite {
   id: string;
   team_id: string;
   email: string;
-  role: TeamRole;
+  role: string; // Database returns string, cast as needed
   token: string;
   expires_at: string;
   accepted_at: string | null;

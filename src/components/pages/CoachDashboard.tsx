@@ -84,41 +84,60 @@ export function CoachDashboard() {
         
         setUserRole(memberData.role);
         
-        // Load team stats
-        const { data: statsData } = await supabase
-          .from('team_stats')
-          .select('*')
-          .eq('team_id', teamId)
+        // Load team info for stats
+        const { data: teamData } = await supabase
+          .from('teams')
+          .select('id, name')
+          .eq('id', teamId)
           .single();
         
-        if (statsData) {
-          setTeamStats(statsData);
+        // Count strategies for this team
+        const { count: strategyCount } = await supabase
+          .from('strategies')
+          .select('*', { count: 'exact', head: true })
+          .eq('team_id', teamId);
+        
+        if (teamData) {
+          setTeamStats({
+            team_id: teamData.id,
+            team_name: teamData.name,
+            total_strategies: strategyCount || 0,
+            total_matches: 0,
+            matches_won: 0,
+            team_win_rate: 0,
+          });
         }
         
         // Load team strategies with stats
         const { data: stratData } = await supabase
           .from('strategies')
-          .select(`
-            id, map, site, side, title, locked, created_at
-          `)
+          .select('id, map, site, side, title, locked, created_at')
           .eq('team_id', teamId)
           .order('created_at', { ascending: false });
         
         if (stratData) {
-          // Get stats for each strategy
-          const { data: statsData } = await supabase
-            .from('strategy_stats')
-            .select('*')
-            .in('strategy_id', stratData.map(s => s.id));
-          
-          const statsMap = new Map(statsData?.map(s => [s.strategy_id, s]) || []);
-          
-          const withStats: StrategyWithStats[] = stratData.map(s => ({
-            ...s,
-            win_rate: statsMap.get(s.id)?.win_rate || 0,
-            total_votes: statsMap.get(s.id)?.total_votes || 0,
-            avg_rating: statsMap.get(s.id)?.avg_rating || 0,
-          }));
+          // Get stats for each strategy using RPC functions
+          const withStats: StrategyWithStats[] = await Promise.all(
+            stratData.map(async (s) => {
+              const [avgRating, winRate] = await Promise.all([
+                supabase.rpc('get_strategy_avg_rating', { strategy_uuid: s.id }),
+                supabase.rpc('get_strategy_win_rate', { strategy_uuid: s.id }),
+              ]);
+              
+              const { count: voteCount } = await supabase
+                .from('strategy_ratings')
+                .select('*', { count: 'exact', head: true })
+                .eq('strategy_id', s.id);
+              
+              return {
+                ...s,
+                locked: s.locked ?? false,
+                win_rate: Number(winRate.data) || 0,
+                total_votes: voteCount || 0,
+                avg_rating: Number(avgRating.data) || 0,
+              };
+            })
+          );
           
           setStrategies(withStats);
         }
@@ -135,13 +154,15 @@ export function CoachDashboard() {
           // Get profiles for members
           const { data: profiles } = await supabase
             .from('profiles')
-            .select('id, display_name')
-            .in('id', membersData.map(m => m.user_id));
+            .select('user_id, display_name')
+            .in('user_id', membersData.map(m => m.user_id));
           
-          const profileMap = new Map(profiles?.map(p => [p.id, p.display_name]) || []);
+          const profileMap = new Map(profiles?.map(p => [p.user_id, p.display_name]) || []);
           
           setMembers(membersData.map(m => ({
-            ...m,
+            id: m.id,
+            user_id: m.user_id,
+            role: m.role,
             display_name: profileMap.get(m.user_id) || 'Unknown',
           })));
         }
