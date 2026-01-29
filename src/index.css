@@ -34,6 +34,9 @@
     --success: 145 65% 42%;
     --success-foreground: 0 0% 100%;
 
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 0%;
+
     --border: 0 0% 12%;
     --input: 0 0% 10%;
     --ring: 0 0% 100%;
@@ -43,6 +46,8 @@
     /* Custom design tokens */
     --glow-primary: 0 0 25px hsl(0 0% 100% / 0.15);
     --glow-success: 0 0 25px hsl(145 65% 42% / 0.35);
+    --glow-destructive: 0 0 25px hsl(0 84% 55% / 0.35);
+    --glow-warning: 0 0 25px hsl(38 92% 50% / 0.35);
     --glow-destructive: 0 0 25px hsl(0 84% 55% / 0.35);
     
     --glass-bg: hsl(0 0% 6% / 0.8);
