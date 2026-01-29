@@ -6,6 +6,7 @@ export interface GameEvent {
   confidence: number;
   audioSpike?: boolean;
   visualDetected?: boolean;
+  facecamDetected?: boolean;
 }
 
 export interface SubtitleSegment {
