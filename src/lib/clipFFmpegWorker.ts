@@ -2,51 +2,131 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import type { SubtitleSegment } from '@/types/clipTypes';
 
+/**
+ * Browser-based FFmpeg worker for clip processing
+ * Uses CDN-loaded WASM binaries with blob URLs to bypass CORS issues
+ */
 class ClipFFmpegWorker {
   private ffmpeg: FFmpeg;
   private loaded: boolean = false;
-  private loading: boolean = false;
+  private loading: Promise<void> | null = null;
 
   constructor() {
     this.ffmpeg = new FFmpeg();
   }
 
+  /**
+   * Load FFmpeg with proper blob URL pattern for browser compatibility
+   */
   async load(onProgress?: (progress: number) => void): Promise<void> {
     if (this.loaded) return;
+    
+    // If already loading, wait for that to complete
     if (this.loading) {
-      // Wait for existing load to complete
-      while (this.loading) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      await this.loading;
       return;
     }
 
-    this.loading = true;
-
+    this.loading = this._doLoad(onProgress);
+    
     try {
+      await this.loading;
+    } finally {
+      this.loading = null;
+    }
+  }
+
+  private async _doLoad(onProgress?: (progress: number) => void): Promise<void> {
+    try {
+      // Use unpkg CDN with UMD build for browser compatibility
       const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-      
+
+      // Set up logging for debugging
       this.ffmpeg.on('log', ({ message }) => {
         console.log('[FFmpeg]', message);
       });
 
+      // Progress callback for encoding operations
       this.ffmpeg.on('progress', ({ progress }) => {
         if (onProgress) {
-          onProgress(progress * 100);
+          onProgress(Math.round(progress * 100));
         }
       });
 
-      await this.ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-      });
+      // CRITICAL: Convert URLs to blob URLs to avoid CORS/CSP issues
+      // This is the proven fix for browser FFmpeg loading
+      const coreURL = await toBlobURL(
+        `${baseURL}/ffmpeg-core.js`,
+        'text/javascript'
+      );
+      const wasmURL = await toBlobURL(
+        `${baseURL}/ffmpeg-core.wasm`,
+        'application/wasm'
+      );
 
+      await this.ffmpeg.load({ coreURL, wasmURL });
       this.loaded = true;
-    } finally {
-      this.loading = false;
+      console.log('[FFmpeg] Loaded successfully');
+    } catch (error) {
+      console.error('[FFmpeg] Load failed:', error);
+      throw new Error(`FFmpeg failed to load: ${error}`);
     }
   }
 
+  /**
+   * Quick short generation - extract, crop to 9:16, output MP4
+   * Based on proven working pattern
+   */
+  async makeShort(
+    file: File | Blob,
+    startSeconds: number,
+    durationSeconds: number,
+    onProgress?: (progress: number) => void
+  ): Promise<Blob> {
+    await this.load(onProgress);
+
+    const inputName = `input_${Date.now()}.mp4`;
+    const outputName = `out_${Date.now()}.mp4`;
+
+    try {
+      // Write input file using fetchFile for proper blob handling
+      await this.ffmpeg.writeFile(inputName, await fetchFile(file));
+
+      // Execute FFmpeg with TikTok/Shorts 9:16 crop
+      await this.ffmpeg.exec([
+        '-ss', String(startSeconds),
+        '-t', String(durationSeconds),
+        '-i', inputName,
+        '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-c:a', 'aac',
+        '-movflags', 'faststart',
+        outputName
+      ]);
+
+      // Read output
+      const data = await this.ffmpeg.readFile(outputName);
+      
+      // Cleanup
+      await this.ffmpeg.deleteFile(inputName);
+      await this.ffmpeg.deleteFile(outputName);
+
+      // Properly convert FileData to Blob
+      const uint8Array = data instanceof Uint8Array 
+        ? new Uint8Array(data.buffer.slice(0)) 
+        : data;
+      
+      return new Blob([uint8Array as BlobPart], { type: 'video/mp4' });
+    } catch (error) {
+      console.error('[FFmpeg] makeShort failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Extract a clip segment with accurate seeking
+   */
   async extractClip(
     videoBlob: Blob,
     startTimeMs: number,
@@ -59,37 +139,39 @@ class ClipFFmpegWorker {
     const outputName = `output_${Date.now()}.mp4`;
 
     try {
-      // Write input file
       await this.ffmpeg.writeFile(inputName, await fetchFile(videoBlob));
 
-      // Extract clip with re-encoding for accurate cuts
+      // Use input seeking (-ss before -i) for faster seeking
       await this.ffmpeg.exec([
         '-ss', (startTimeMs / 1000).toFixed(3),
         '-i', inputName,
         '-t', (durationMs / 1000).toFixed(3),
         '-c:v', 'libx264',
-        '-preset', 'ultrafast',
+        '-preset', 'veryfast',
         '-c:a', 'aac',
         '-avoid_negative_ts', 'make_zero',
+        '-movflags', 'faststart',
         outputName
       ]);
 
-      // Read output
       const data = await this.ffmpeg.readFile(outputName);
       
-      // Cleanup
       await this.ffmpeg.deleteFile(inputName);
       await this.ffmpeg.deleteFile(outputName);
 
-      // Convert FileData to proper Uint8Array for Blob
-      const uint8Array = data instanceof Uint8Array ? new Uint8Array(data.buffer.slice(0)) : data;
+      const uint8Array = data instanceof Uint8Array 
+        ? new Uint8Array(data.buffer.slice(0)) 
+        : data;
       return new Blob([uint8Array as BlobPart], { type: 'video/mp4' });
     } catch (error) {
-      console.error('Extract clip failed:', error);
+      console.error('[FFmpeg] extractClip failed:', error);
       throw error;
     }
   }
 
+  /**
+   * Add subtitles to video
+   */
   async addSubtitles(
     videoBlob: Blob,
     subtitles: SubtitleSegment[],
@@ -112,37 +194,41 @@ class ClipFFmpegWorker {
     const outputName = `output_sub_${Date.now()}.mp4`;
 
     try {
-      // Generate SRT file
       const srtContent = this.generateSRT(subtitles);
       await this.ffmpeg.writeFile(srtName, srtContent);
       await this.ffmpeg.writeFile(inputName, await fetchFile(videoBlob));
 
-      // Apply subtitles with styling
+      // Build subtitle style string for ASS format
       const styleStr = `Fontname=${style.fontName},FontSize=${style.fontSize},PrimaryColour=${this.colorToASS(style.primaryColor)},OutlineColour=${this.colorToASS(style.outlineColor)},Bold=1,Alignment=2,MarginV=30`;
 
       await this.ffmpeg.exec([
         '-i', inputName,
         '-vf', `subtitles=${srtName}:force_style='${styleStr}'`,
         '-c:a', 'copy',
-        '-preset', 'ultrafast',
+        '-preset', 'veryfast',
+        '-movflags', 'faststart',
         outputName
       ]);
 
       const data = await this.ffmpeg.readFile(outputName);
       
-      // Cleanup
       await this.ffmpeg.deleteFile(inputName);
       await this.ffmpeg.deleteFile(srtName);
       await this.ffmpeg.deleteFile(outputName);
 
-      const uint8Array = data instanceof Uint8Array ? new Uint8Array(data.buffer.slice(0)) : data;
+      const uint8Array = data instanceof Uint8Array 
+        ? new Uint8Array(data.buffer.slice(0)) 
+        : data;
       return new Blob([uint8Array as BlobPart], { type: 'video/mp4' });
     } catch (error) {
-      console.error('Add subtitles failed:', error);
+      console.error('[FFmpeg] addSubtitles failed:', error);
       return videoBlob; // Return original if subtitles fail
     }
   }
 
+  /**
+   * Crop video to specific aspect ratio
+   */
   async cropToAspectRatio(
     videoBlob: Blob,
     preset: 'STACKED_FACECAM' | 'FULLSCREEN' | 'CENTERED' | 'CROPPED',
@@ -156,6 +242,7 @@ class ClipFFmpegWorker {
     try {
       await this.ffmpeg.writeFile(inputName, await fetchFile(videoBlob));
 
+      // Crop filter presets
       const cropFilters: Record<string, string> = {
         STACKED_FACECAM: 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920',
         FULLSCREEN: 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
@@ -166,25 +253,31 @@ class ClipFFmpegWorker {
       await this.ffmpeg.exec([
         '-i', inputName,
         '-vf', cropFilters[preset],
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
         '-c:a', 'copy',
-        '-preset', 'ultrafast',
+        '-movflags', 'faststart',
         outputName
       ]);
 
       const data = await this.ffmpeg.readFile(outputName);
       
-      // Cleanup
       await this.ffmpeg.deleteFile(inputName);
       await this.ffmpeg.deleteFile(outputName);
 
-      const uint8Array = data instanceof Uint8Array ? new Uint8Array(data.buffer.slice(0)) : data;
+      const uint8Array = data instanceof Uint8Array 
+        ? new Uint8Array(data.buffer.slice(0)) 
+        : data;
       return new Blob([uint8Array as BlobPart], { type: 'video/mp4' });
     } catch (error) {
-      console.error('Crop failed:', error);
+      console.error('[FFmpeg] cropToAspectRatio failed:', error);
       throw error;
     }
   }
 
+  /**
+   * Apply video effects (slow-mo, color grading, zoom)
+   */
   async applyEffects(
     videoBlob: Blob,
     effects: {
@@ -226,26 +319,27 @@ class ClipFFmpegWorker {
       }
       
       if (effects.slowMo) {
-        // Also slow down audio
+        // Slow down audio to match video
         args.push('-af', `atempo=${effects.slowMo.speed}`);
       } else {
         args.push('-c:a', 'copy');
       }
       
-      args.push('-preset', 'ultrafast', outputName);
+      args.push('-c:v', 'libx264', '-preset', 'veryfast', '-movflags', 'faststart', outputName);
 
       await this.ffmpeg.exec(args);
 
       const data = await this.ffmpeg.readFile(outputName);
       
-      // Cleanup
       await this.ffmpeg.deleteFile(inputName);
       await this.ffmpeg.deleteFile(outputName);
 
-      const uint8Array = data instanceof Uint8Array ? new Uint8Array(data.buffer.slice(0)) : data;
+      const uint8Array = data instanceof Uint8Array 
+        ? new Uint8Array(data.buffer.slice(0)) 
+        : data;
       return new Blob([uint8Array as BlobPart], { type: 'video/mp4' });
     } catch (error) {
-      console.error('Apply effects failed:', error);
+      console.error('[FFmpeg] applyEffects failed:', error);
       return videoBlob;
     }
   }
