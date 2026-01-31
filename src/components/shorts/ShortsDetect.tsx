@@ -1,10 +1,16 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Play, Pause, Loader2, Volume2, Sparkles, RefreshCw,
-  Zap, Eye, ArrowRight, CheckCircle2
+  Zap, Eye, ArrowRight, CheckCircle2, Camera, Waves, Target
 } from 'lucide-react';
 import { clipDBManager } from '@/lib/clipIndexedDB';
 import type { GameEvent } from '@/types/clipTypes';
+import type { FusedEvent } from '@/lib/eventFusionEngine';
+import { 
+  unifiedEventDetector, 
+  type DetectionProgress, 
+  type DetectionResult 
+} from '@/lib/unifiedEventDetector';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -35,10 +41,17 @@ export function ShortsDetect({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [detecting, setDetecting] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [progressStage, setProgressStage] = useState<string>('');
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [useVisualDetection, setUseVisualDetection] = useState(true);
+  
+  // Detection toggles
+  const [enableVisual, setEnableVisual] = useState(true);
+  const [enableFacecam, setEnableFacecam] = useState(true);
+  
+  // Stats from last detection
+  const [detectionStats, setDetectionStats] = useState<DetectionResult['stats'] | null>(null);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -69,103 +82,75 @@ export function ShortsDetect({
   };
 
   const detectHighlights = useCallback(async () => {
-    const video = videoRef.current;
-    if (!video || detecting) return;
+    if (detecting) return;
 
     setDetecting(true);
     setProgress(0);
+    setProgressStage('Initializing...');
     
     try {
-      toast.info('Analyzing video for highlights...', {
-        description: 'This may take a moment depending on video length'
+      toast.info('Starting multi-source fusion detection...', {
+        description: `Audio${enableVisual ? ' + Visual' : ''}${enableFacecam ? ' + Facecam' : ''}`
       });
 
-      // Reset video position
-      video.currentTime = 0;
-      video.muted = true; // Mute during analysis
-      await video.play();
+      // Fetch video blob from IndexedDB
+      const videoBlob = await clipDBManager.getVideo(videoId);
+      if (!videoBlob) {
+        throw new Error('Video not found in storage');
+      }
 
-      const audioContext = new AudioContext();
-      const source = audioContext.createMediaElementSource(video);
-      const analyser = audioContext.createAnalyser();
-      source.connect(analyser);
-      analyser.connect(audioContext.destination);
+      // Configure detector
+      unifiedEventDetector.setConfig({
+        audioSensitivity: sensitivity,
+        enableVisual,
+        enableFacecam,
+        mode: 'FLEX', // Default, will be configurable
+      });
+
+      // Run unified detection
+      const result = await unifiedEventDetector.detectAll(
+        videoBlob,
+        (prog: DetectionProgress) => {
+          setProgress(prog.progress);
+          setProgressStage(prog.message);
+        }
+      );
+
+      setDetectionStats(result.stats);
       
-      analyser.fftSize = 2048;
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      const events: GameEvent[] = [];
-      let lastPeakTime = -3;
+      // Convert FusedEvents to GameEvents for downstream compatibility
+      const gameEvents: GameEvent[] = result.events.map(e => ({
+        id: e.id,
+        timestamp: e.timestamp,
+        type: e.type,
+        score: e.score,
+        confidence: e.confidence,
+        audioSpike: e.sources.includes('audio'),
+        visualDetected: e.sources.includes('visual'),
+        facecamDetected: e.sources.includes('facecam'),
+      }));
 
-      // Calculate threshold based on sensitivity (higher sensitivity = lower threshold)
-      const threshold = Math.round(200 - (sensitivity * 150));
-
-      const scanAudio = () => {
-        if (video.paused || video.ended) {
-          // Cleanup and finish
-          audioContext.close();
-          video.muted = false;
-          video.currentTime = 0;
-          setDetecting(false);
-          setProgress(100);
-          
-          onEventsDetected(events);
-          
-          if (events.length > 0) {
-            toast.success(`Found ${events.length} potential highlights!`, {
-              description: 'Click "Edit" to generate clips'
-            });
-          } else {
-            toast.info('No highlights detected', {
-              description: 'Try increasing sensitivity or check audio levels'
-            });
-          }
-          return;
-        }
-
-        // Update progress
-        setProgress(Math.round((video.currentTime / video.duration) * 100));
-
-        analyser.getByteFrequencyData(dataArray);
-        const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-        
-        // Detect peaks above threshold
-        if (avg > threshold && video.currentTime - lastPeakTime >= 3) {
-          // Classify event type based on audio intensity
-          let eventType: GameEvent['type'] = 'KILL';
-          if (avg > threshold + 50) eventType = 'DOUBLE';
-          if (avg > threshold + 80) eventType = 'TRIPLE';
-          if (avg > threshold + 100) eventType = '4K';
-          if (avg > threshold + 120) eventType = 'ACE';
-
-          const event: GameEvent = {
-            id: `event-${Date.now()}-${events.length}`,
-            timestamp: video.currentTime * 1000, // Convert to ms
-            type: eventType,
-            score: Math.min(10, Math.round((avg / threshold) * 5)),
-            confidence: Math.min(1, avg / (threshold * 1.5)),
-            audioSpike: true,
-            visualDetected: useVisualDetection && Math.random() > 0.3, // Simulated
-          };
-
-          events.push(event);
-          lastPeakTime = video.currentTime;
-        }
-
-        requestAnimationFrame(scanAudio);
-      };
-
-      // Speed up playback for faster analysis
-      video.playbackRate = 4;
-      scanAudio();
+      onEventsDetected(gameEvents);
+      
+      if (gameEvents.length > 0) {
+        toast.success(`Found ${gameEvents.length} highlights!`, {
+          description: `${result.stats.fusedEvents} fused from ${result.stats.audioEvents} audio, ${result.stats.visualEvents} visual, ${result.stats.facecamEvents} facecam events`
+        });
+      } else {
+        toast.info('No highlights detected', {
+          description: 'Try increasing sensitivity or check audio levels'
+        });
+      }
 
     } catch (error) {
       console.error('Detection failed:', error);
       toast.error('Detection failed', {
-        description: 'Could not analyze video audio'
+        description: error instanceof Error ? error.message : 'Unknown error'
       });
+    } finally {
       setDetecting(false);
     }
-  }, [detecting, sensitivity, useVisualDetection, onEventsDetected]);
+  }, [detecting, sensitivity, enableVisual, enableFacecam, videoId, onEventsDetected]);
 
   const togglePlayPause = () => {
     const video = videoRef.current;
@@ -183,6 +168,13 @@ export function ShortsDetect({
     const video = videoRef.current;
     if (!video) return;
     video.currentTime = time;
+  };
+
+  const seekToEvent = (event: GameEvent) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = event.timestamp / 1000;
+    video.play();
   };
 
   return (
@@ -214,14 +206,65 @@ export function ShortsDetect({
             </button>
           )}
 
+          {/* Event markers on timeline */}
+          {detectedEvents.length > 0 && duration > 0 && (
+            <div className="absolute bottom-16 left-4 right-4 h-1 bg-white/20 rounded">
+              {detectedEvents.map((event) => (
+                <button
+                  key={event.id}
+                  className={cn(
+                    "absolute w-2 h-3 -top-1 rounded-sm transform -translate-x-1/2 cursor-pointer hover:scale-150 transition-transform",
+                    event.type === 'ACE' || event.type === 'CLUTCH' 
+                      ? 'bg-accent' 
+                      : event.type === '4K' || event.type === 'TRIPLE'
+                      ? 'bg-primary'
+                      : 'bg-foreground/70'
+                  )}
+                  style={{ left: `${(event.timestamp / 1000 / duration) * 100}%` }}
+                  onClick={() => seekToEvent(event)}
+                  title={`${event.type} at ${formatTime(event.timestamp / 1000)}`}
+                />
+              ))}
+            </div>
+          )}
+
           {/* Detection overlay */}
           {detecting && (
-            <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
-              <div className="text-center">
-                <Loader2 className="w-12 h-12 animate-spin text-primary mx-auto mb-4" />
-                <p className="text-white font-medium mb-2">Analyzing Audio...</p>
-                <Progress value={progress} className="w-48 h-2" />
-                <p className="text-white/70 text-sm mt-2">{progress}%</p>
+            <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+              <div className="text-center max-w-sm">
+                <div className="relative mb-6">
+                  <Loader2 className="w-16 h-16 animate-spin text-primary mx-auto" />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Target className="w-6 h-6 text-primary" />
+                  </div>
+                </div>
+                <p className="text-white font-semibold text-lg mb-2">Multi-Source Fusion</p>
+                <p className="text-white/80 text-sm mb-4">{progressStage}</p>
+                <Progress value={progress} className="h-2 mb-2" />
+                <div className="flex justify-center gap-4 text-xs text-white/60">
+                    <span className={cn(
+                    "flex items-center gap-1",
+                    progress > 0 ? "text-primary" : ""
+                  )}>
+                    <Waves className="w-3 h-3" /> Audio
+                  </span>
+                  {enableVisual && (
+                    <span className={cn(
+                      "flex items-center gap-1",
+                      progress > 33 ? "text-primary" : ""
+                    )}>
+                      <Eye className="w-3 h-3" /> Visual
+                    </span>
+                  )}
+                  {enableFacecam && (
+                    <span className={cn(
+                      "flex items-center gap-1",
+                      progress > 66 ? "text-primary" : ""
+                    )}>
+                      <Camera className="w-3 h-3" /> Facecam
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -260,17 +303,21 @@ export function ShortsDetect({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Volume2 className="w-5 h-5 text-primary" />
-            Detection Settings
+            <Sparkles className="w-5 h-5 text-primary" />
+            Full Fusion Detection
           </CardTitle>
           <CardDescription>
-            Configure how highlights are detected in your gameplay
+            Combine audio, visual, and facecam analysis for maximum accuracy
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          {/* Audio Sensitivity */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <Label>Audio Sensitivity</Label>
+              <Label className="flex items-center gap-2">
+                <Waves className="w-4 h-4 text-primary" />
+                Audio Sensitivity
+              </Label>
               <span className="text-sm text-muted-foreground font-mono">
                 {Math.round(sensitivity * 100)}%
               </span>
@@ -283,23 +330,41 @@ export function ShortsDetect({
               onValueChange={([v]) => onSensitivityChange(v)}
             />
             <p className="text-xs text-muted-foreground">
-              Higher sensitivity detects more events but may include false positives
+              Detects volume spikes from kills, abilities, and reactions
             </p>
           </div>
 
-          <div className="flex items-center justify-between py-2">
+          {/* Visual Detection Toggle */}
+          <div className="flex items-center justify-between py-2 border-t border-border pt-4">
             <div>
               <Label className="flex items-center gap-2">
-                <Eye className="w-4 h-4" />
-                Visual Detection
+                <Eye className="w-4 h-4 text-accent-foreground" />
+                Visual Kill Feed Detection
               </Label>
               <p className="text-xs text-muted-foreground mt-1">
-                Analyze killfeed and UI elements for better accuracy
+                Monitors top-right corner for kill feed changes
               </p>
             </div>
             <Switch
-              checked={useVisualDetection}
-              onCheckedChange={setUseVisualDetection}
+              checked={enableVisual}
+              onCheckedChange={setEnableVisual}
+            />
+          </div>
+
+          {/* Facecam Detection Toggle */}
+          <div className="flex items-center justify-between py-2 border-t border-border pt-4">
+            <div>
+              <Label className="flex items-center gap-2">
+                <Camera className="w-4 h-4 text-secondary-foreground" />
+                Facecam Reaction Detection
+              </Label>
+              <p className="text-xs text-muted-foreground mt-1">
+                Detects reactions in bottom-left corner (streamers)
+              </p>
+            </div>
+            <Switch
+              checked={enableFacecam}
+              onCheckedChange={setEnableFacecam}
             />
           </div>
         </CardContent>
@@ -332,11 +397,40 @@ export function ShortsDetect({
         </Button>
       </div>
 
+      {/* Detection Stats */}
+      {detectionStats && (
+        <Card className="border-muted bg-muted/30">
+          <CardContent className="p-4">
+            <div className="grid grid-cols-4 gap-4 text-center">
+              <div>
+                <p className="text-2xl font-bold text-primary">{detectionStats.audioEvents}</p>
+                <p className="text-xs text-muted-foreground">Audio Events</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-accent-foreground">{detectionStats.visualEvents}</p>
+                <p className="text-xs text-muted-foreground">Visual Events</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-secondary-foreground">{detectionStats.facecamEvents}</p>
+                <p className="text-xs text-muted-foreground">Facecam Events</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-accent">{detectionStats.fusedEvents}</p>
+                <p className="text-xs text-muted-foreground">Fused Total</p>
+              </div>
+            </div>
+            <p className="text-center text-xs text-muted-foreground mt-3">
+              Processed in {(detectionStats.processingTime / 1000).toFixed(1)}s
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Detected Events Summary */}
       {detectedEvents.length > 0 && (
         <Card className="border-primary/30 bg-primary/5">
           <CardContent className="p-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-full bg-primary/20">
                   <CheckCircle2 className="w-5 h-5 text-primary" />
@@ -344,7 +438,7 @@ export function ShortsDetect({
                 <div>
                   <p className="font-semibold">{detectedEvents.length} Highlights Detected</p>
                   <p className="text-sm text-muted-foreground">
-                    Ready to generate clips
+                    Click markers on timeline to preview
                   </p>
                 </div>
               </div>
@@ -359,6 +453,47 @@ export function ShortsDetect({
                   );
                 })}
               </div>
+            </div>
+            
+            {/* Event List */}
+            <div className="space-y-2 max-h-48 overflow-y-auto">
+              {detectedEvents.slice(0, 10).map((event) => (
+                <button
+                  key={event.id}
+                  onClick={() => seekToEvent(event)}
+                  className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-primary/10 transition-colors text-left"
+                >
+                  <Badge 
+                    variant={event.type === 'ACE' || event.type === 'CLUTCH' ? 'default' : 'secondary'}
+                    className="w-16 justify-center"
+                  >
+                    {event.type}
+                  </Badge>
+                  <span className="font-mono text-sm text-muted-foreground">
+                    {formatTime(event.timestamp / 1000)}
+                  </span>
+                  <div className="flex-1" />
+                  <div className="flex gap-1" title="Detection sources">
+                    {event.audioSpike && (
+                      <Waves className="w-3 h-3 text-primary" />
+                    )}
+                    {event.visualDetected && (
+                      <Eye className="w-3 h-3 text-accent-foreground" />
+                    )}
+                    {event.facecamDetected && (
+                      <Camera className="w-3 h-3 text-secondary-foreground" />
+                    )}
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {Math.round(event.confidence * 100)}%
+                  </span>
+                </button>
+              ))}
+              {detectedEvents.length > 10 && (
+                <p className="text-center text-xs text-muted-foreground py-2">
+                  +{detectedEvents.length - 10} more events
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>
